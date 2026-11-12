@@ -46,7 +46,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
-__version__ = "1.1.0"
+from i18n import t
+
+__version__ = "1.2.0"
 
 IS_WINDOWS = platform.system() == "Windows"
 
@@ -182,7 +184,7 @@ def vendor_of(mac: str) -> str:
         pass
     try:
         if int(mac.split(":")[0], 16) & 0x02:
-            return "(MAC cục bộ/ngẫu nhiên)"
+            return t("mac_local")
     except Exception:
         pass
     return ""
@@ -213,15 +215,15 @@ def parse_ranges(items: Iterable[str]) -> List[ipaddress.IPv4Network]:
                         b = ".".join(str(start).split(".")[:3] + [b])
                     end = ipaddress.IPv4Address(b)
                     if int(end) < int(start):
-                        die(f"dải IP '{item}': IP cuối nhỏ hơn IP đầu")
+                        die(t("range_order", item=item))
                     if int(end) - int(start) > 1_000_000:
-                        die(f"dải IP '{item}' quá lớn")
+                        die(t("range_big", item=item))
                     # từng IP /32 để không bỏ sót địa chỉ đầu/cuối của các khối CIDR
                     nets.extend(ipaddress.IPv4Network(v) for v in range(int(start), int(end) + 1))
                 else:
                     nets.append(ipaddress.IPv4Network(item, strict=False))
             except ValueError as e:
-                die(f"dải IP không hợp lệ '{item}': {e}")
+                die(t("range_bad", item=item, err=e))
     return nets
 
 
@@ -396,7 +398,7 @@ class Registry:
         if d is None:
             d = Device(nic=nic, mac=mac, vendor=vendor_of(mac))
             self.devs[key] = d
-            self._log(f"[{nic}] Thiết bị mới MAC {mac} {d.vendor}")
+            self._log(t("new_dev", nic=nic, mac=mac, vendor=d.vendor))
         d.last = time.time()
         d.packets += 1
         return d
@@ -418,7 +420,7 @@ class Registry:
                 return
             if ip not in d.ips:
                 d.ips[ip] = set()
-                self._log(f"[{nic}]   {mac} có IP {ip}  (qua {source})")
+                self._log(t("dev_ip", nic=nic, mac=mac, ip=ip, src=source))
             d.ips[ip].add(source)
             d.ipv6_only = False
 
@@ -429,7 +431,7 @@ class Registry:
             d = self._get(nic, mac)
             if d and ip not in d.probes:
                 d.probes.add(ip)
-                self._log(f"[{nic}]   {mac} đang khởi động, thử nhận IP {ip} (ARP probe)")
+                self._log(t("dev_probe", nic=nic, mac=mac, ip=ip))
 
     def add_asked(self, nic: str, mac: str, ip: str) -> None:
         if not ip_valid_host(ip):
@@ -447,7 +449,7 @@ class Registry:
             d = self._get(nic, mac)
             if d and name not in d.names:
                 d.names.add(name)
-                self._log(f"[{nic}]   {mac} tên: {name}")
+                self._log(t("dev_name", nic=nic, mac=mac, name=name))
 
     def add_info(self, nic: str, mac: str, key: str, value: str) -> None:
         with self.lock:
@@ -460,7 +462,7 @@ class Registry:
             d = self._get(nic, mac)
             if d and not d.dhcp:
                 d.dhcp = True
-                self._log(f"[{nic}]   {mac} đang xin IP qua DHCP/BOOTP (thiết bị ở chế độ DHCP)")
+                self._log(t("dev_dhcp", nic=nic, mac=mac))
 
     def mark_ipv6(self, nic: str, mac: str) -> None:
         with self.lock:
@@ -743,18 +745,18 @@ class Prober:
         total = len(targets) * len(sources)
         if total == 0:
             return
-        log(f"[{self.nic.name}] Quét ARP {len(targets)} IP{label} "
-            f"(IP nguồn: {', '.join(sources)}), ~{total / self.rate:.0f}s ...")
+        log(t("arp_start", nic=self.nic.name, n=len(targets), label=label, src=", ".join(sources),
+              sec=f"{total / self.rate:.0f}"))
         interval = 1.0 / self.rate
         t_next = time.perf_counter()
         sent = 0
         last_report = time.time()
         spas = [socket.inet_aton(x) for x in sources]
         arp_hdr = struct.pack("!HHBBH", 1, ETH_IPV4, 6, 4, 1) + self.mymac
-        for t in targets:  # mỗi IP gửi lần lượt các kiểu IP nguồn (xen kẽ, không quét 2 lượt)
-            if t in own:
+        for tgt in targets:  # mỗi IP gửi lần lượt các kiểu IP nguồn (xen kẽ, không quét 2 lượt)
+            if tgt in own:
                 continue
-            tpa = socket.inet_aton(t)
+            tpa = socket.inet_aton(tgt)
             for spa in spas:
                 if self.stop.is_set():
                     return
@@ -768,7 +770,7 @@ class Prober:
                     t_next = time.perf_counter()
             if time.time() - last_report > 10:
                 last_report = time.time()
-                log(f"[{self.nic.name}]   ... đã gửi {sent}/{total}")
+                log(t("arp_progress", nic=self.nic.name, sent=sent, total=total))
 
     def arp_probe_one(self, ip: str, src_ip: str = "0.0.0.0") -> None:
         hdr = mac_bytes(BROADCAST) + self.mymac + struct.pack("!H", ETH_ARP)
@@ -791,7 +793,7 @@ def build_targets(args) -> List[str]:
     nets = list(PRESETS[args.preset]) + list(args.range or [])
     targets = hosts_of(parse_ranges(nets))
     if args.limit and len(targets) > args.limit:
-        die(f"dải quét có {len(targets)} IP, vượt giới hạn --limit {args.limit}. Tăng --limit nếu chắc chắn.")
+        die(t("limit", n=len(targets), limit=args.limit))
     return targets
 
 
@@ -808,25 +810,33 @@ def active_round(prober: Prober, args, targets: List[str], first: bool) -> None:
         if not args.no_own_subnet:
             own_targets = hosts_of([n for n in prober.nic.networks if n.prefixlen >= 22])
         if own_targets:
-            prober.arp_sweep(own_targets, "own", " trong subnet của NIC")
+            prober.arp_sweep(own_targets, "own", t("arp_label_own"))
         own_set = set(own_targets)
-        prober.arp_sweep([t for t in targets if t not in own_set], args.arp_src, " (dải mặc định/tự chọn)")
+        prober.arp_sweep([x for x in targets if x not in own_set], args.arp_src, t("arp_label_ranges"))
         if not prober.stop.is_set():
-            log(f"[{prober.nic.name}] Quét ARP xong, tiếp tục nghe...")
+            log(t("arp_done", nic=prober.nic.name))
+
+
+STATUS_ORDER = {"other": 0, "dhcp": 1, "booting": 2, "same": 3, "noip": 4, "": 5}
+
+
+def status_text(code: str) -> str:
+    return t("st_" + code) if code else ""
 
 
 def classify(dev: Device, nic: Optional[Nic]) -> str:
+    """Mã trạng thái: other | same | dhcp | booting | noip ('' nếu không rõ NIC)."""
     if not dev.ips:
         if dev.dhcp:
-            return "DHCP - CHƯA CÓ IP"
+            return "dhcp"
         if dev.probes:
-            return "ĐANG KHỞI ĐỘNG"
-        return "CHƯA THẤY IPv4"
+            return "booting"
+        return "noip"
     if nic is None:
         return ""
     if any(ipaddress.IPv4Address(ip) in net for ip in dev.ips for net in nic.networks):
-        return "cùng subnet"
-    return "KHÁC SUBNET"
+        return "same"
+    return "other"
 
 
 def print_results(reg: Registry, nics: List[Nic], baseline: Optional[Set[str]] = None) -> List[Device]:
@@ -842,11 +852,11 @@ def print_results(reg: Registry, nics: List[Nic], baseline: Optional[Set[str]] =
     hdr = f"{'NIC':<12} {'MAC':<17} {'IP':<34} {'TRẠNG THÁI':<18} HÃNG / TÊN"
     print(hdr)
     print("-" * 100)
-    order = {"KHÁC SUBNET": 0, "DHCP - CHƯA CÓ IP": 1, "ĐANG KHỞI ĐỘNG": 2, "cùng subnet": 3}
-    devs.sort(key=lambda d: (order.get(classify(d, by_name.get(d.nic)), 4), d.nic, d.mac))
+    devs.sort(key=lambda d: (STATUS_ORDER.get(classify(d, by_name.get(d.nic)), 9), d.nic, d.mac))
     for d in devs:
-        st = classify(d, by_name.get(d.nic))
-        ips = ", ".join(d.best_ips()) or (("thử " + ", ".join(sorted(d.probes))) if d.probes else "-")
+        code = classify(d, by_name.get(d.nic))
+        st = status_text(code)
+        ips = ", ".join(d.best_ips()) or ((t("trying") + " " + ", ".join(sorted(d.probes))) if d.probes else "-")
         new = ""
         if baseline is not None and d.mac not in baseline:
             new = " [MỚI]"
@@ -855,13 +865,13 @@ def print_results(reg: Registry, nics: List[Nic], baseline: Optional[Set[str]] =
         print(f"{d.nic[:12]:<12} {d.mac:<17} {ips[:34]:<34} {st:<18} {extra}{new}")
         if len(ips) > 34:
             print(f"{'':<31}{ips}")
-        if d.asked and st == "KHÁC SUBNET":
+        if d.asked and code == "other":
             print(f"{'':<31}-> thiết bị đang tìm IP: {', '.join(sorted(d.asked)[:5])} (thường là gateway/máy chủ)")
         for k in ("dcp_ip", "eip_identity", "pn_type", "dhcp_vendor_class"):
             if k in d.info:
                 print(f"{'':<31}{k}: {d.info[k]}")
     print("-" * 100)
-    others = [d for d in devs if classify(d, by_name.get(d.nic)) == "KHÁC SUBNET"]
+    others = [d for d in devs if classify(d, by_name.get(d.nic)) == "other"]
     if others:
         print("Thiết bị KHÁC SUBNET (thường là thiết bị cần tìm). Để truy cập web/tool cấu hình của nó:")
         for d in others:
@@ -904,16 +914,16 @@ class Scanner:
             try:
                 self.sniffers.append(start_sniffer(n, self.reg))
             except Exception as e:
-                log(f"[{n.name}] Không mở được card để nghe: {e}")
+                log(t("sniff_fail", nic=n.name, err=e))
         if not self.sniffers:
-            die("không nghe được trên card nào. Chạy bằng quyền Administrator/root; Windows cần cài Npcap.")
+            die(t("no_sniffer"))
         if self.args.passive:
             return
         for n in self.nics:
             try:
                 p = Prober(n, self.args.rate)
             except Exception as e:
-                log(f"[{n.name}] Không gửi được gói trên card này: {e}")
+                log(t("send_fail", nic=n.name, err=e))
                 continue
             self.probers.append(p)
             threading.Thread(target=self._active_loop, args=(p,), daemon=True).start()
@@ -924,7 +934,7 @@ class Scanner:
             try:
                 active_round(p, self.args, self.targets, first)
             except Exception as e:
-                log(f"[{p.nic.name}] lỗi khi gửi gói dò: {e}")
+                log(t("probe_err", nic=p.nic.name, err=e))
                 return
             first = False
             self.stop_all.wait(self.args.interval)
@@ -962,7 +972,7 @@ def export_results(devs: List[Device], nics: List[Nic], path: str, sel_labels: O
             w = csv.writer(f)
             w.writerow(["nic", "mac", "vendor", "ips", "status", "names", "dhcp", "info"])
             for d in devs:
-                w.writerow([d.nic, d.mac, d.vendor, " ".join(d.best_ips()), classify(d, by_name.get(d.nic)),
+                w.writerow([d.nic, d.mac, d.vendor, " ".join(d.best_ips()), status_text(classify(d, by_name.get(d.nic))),
                             " | ".join(sorted(d.names)), d.dhcp, json.dumps(d.info, ensure_ascii=False)])
     else:
         data = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "nics": sel_labels or [],
@@ -1051,7 +1061,7 @@ def run_cmd(cmd: List[str]) -> Tuple[int, str]:
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, errors="replace", **kw)
     except (FileNotFoundError, LookupError) as e:
-        log(f"    lỗi: {e}")
+        log(t("cmd_err", err=e))
         return 1, str(e)
     out = ((r.stdout or "") + (r.stderr or "")).strip()
     if out:
@@ -1095,17 +1105,17 @@ def plan_access(nics: List[Nic], nic: Nic, dev_ip: str, prefix: int = 24, my_ip:
     else:
         hosts = [str(h) for h in net.hosts()] if net.prefixlen < 31 else [str(h) for h in net]
         cands = [h for h in reversed(hosts) if h != str(dip)][:8]
-    log(f"Kiểm tra IP trống trên card '{nic.name}' (ARP probe): {', '.join(cands)} ...")
+    log(t("check_free", nic=nic.name, ips=", ".join(cands)))
     try:
         used = arp_check_used(nic, cands)
     except Exception as e:
-        log(f"  (không kiểm tra được: {e})")
+        log(t("check_fail", err=e))
         used = set()
     if used:
-        log("  Đang có thiết bị dùng: " + ", ".join(sorted(used)))
+        log(t("ip_in_use", ips=", ".join(sorted(used))))
     free = [c for c in cands if c not in used and c != str(dip)]
     if not free:
-        die("không tìm được IP trống trong subnet của thiết bị. Hãy tự chỉ định IP cho máy tính.")
+        die(t("no_free_ip"))
     add, rem = access_cmds(nic, free[0], net.prefixlen)
     return AccessPlan(nic, str(dip), net, free[0], conflicts, used, add, rem)
 
@@ -1228,15 +1238,12 @@ def dcp_request(nic: Nic, dst_mac: str, service_id: int, blocks: bytes, wait: fl
 
 def dcp_result_ok(blocks: Optional[List[Tuple[int, int, bytes]]]) -> Tuple[bool, str]:
     if blocks is None:
-        return False, "thiết bị không trả lời (có thể không hỗ trợ PROFINET DCP, hoặc sai MAC/card)"
+        return False, t("dcp_noreply")
     for opt, sub, val in blocks:
         if opt == 5 and sub == 4 and len(val) >= 3:
             err = val[2]
-            names = {0: "OK", 1: "Option không hỗ trợ", 2: "Suboption không hỗ trợ / không có",
-                     3: "Suboption chưa set được", 4: "Lỗi tài nguyên", 5: "Không thể set (thiết bị đang chạy / bị khoá)",
-                     6: "Không được phép (đang kết nối với PLC?)"}
-            return err == 0, names.get(err, f"mã lỗi {err}")
-    return True, "OK (không có mã phản hồi)"
+            return err == 0, (t(f"dcp_e{err}") if 0 <= err <= 6 else t("dcp_ecode", code=err))
+    return True, t("dcp_ok_nocode")
 
 
 def dcp_set_ip(nic: Nic, mac: str, ip: str, mask: str, gw: str = "0.0.0.0", permanent: bool = True) -> Tuple[bool, str]:
@@ -1332,11 +1339,11 @@ def wizard() -> int:
         if key.lower() == "all" or key.lower() in valid:
             break
         print(f"  Không có card '{key}'. Nhập số trong ngoặc [ ] ở danh sách trên.")
-    t = input("Thời gian dò (giây, Enter = 60): ").strip()
+    tsec = input("Thời gian dò (giây, Enter = 60): ").strip()
     preset = input("Dải quét ARP: [1] nhanh (mặc định)  [2] toàn bộ 192.168.x.x  [3] rộng  [4] không quét: ").strip()
     preset = {"2": "192", "3": "wide", "4": "none"}.get(preset, "quick")
     extra = input("Dải IP thêm (VD 192.168.7.0/24, Enter = bỏ qua): ").strip()
-    argv = ["find", "--iface", key, "--time", t if t.isdigit() else "60", "--preset", preset]
+    argv = ["find", "--iface", key, "--time", tsec if tsec.isdigit() else "60", "--preset", preset]
     if extra:
         argv += ["--range", extra]
     args = build_parser().parse_args(argv)

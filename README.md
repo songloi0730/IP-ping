@@ -31,33 +31,43 @@ ngay trên card mạng (NIC) cắm thiết bị, nên **không cần cùng subne
 
 ## Cài đặt trên Windows – không cần Internet, không cần Python
 
-Bộ cài `IPFinder-Setup-x.y.z.exe` đã chứa sẵn Python runtime và mọi thư viện. Máy đích
-**không cần cài Python** và **không cần mạng Internet**. Chạy được trên Windows 7 SP1, 8.1, 10, 11 (64-bit).
+Gói `IPFinder-Offline-x.y.z.zip` đã chứa sẵn Python runtime và mọi thư viện. Máy đích **không cần cài Python**
+và **không cần Internet**. Chạy được trên Windows 7 SP1, 8.1, 10, 11 (64-bit). Giao diện và bộ cài có
+**Tiếng Việt / English / 中文**.
 
-### 1. Tải bộ cài (trên máy có Internet)
+### 1. Tải gói offline (trên máy có Internet)
 - **Releases** của repo (khi có tag `v*`), hoặc
-- tab **Actions** → lần chạy CI mới nhất → mục *Artifacts* → `IPFinder-windows-x.y.z`
-  (cần đăng nhập GitHub; giải nén ra `IPFinder-Setup-x.y.z.exe` và `IPFinder-portable-x.y.z.zip`).
+- tab **Actions** → lần chạy CI mới nhất → *Artifacts* → `IPFinder-windows-x.y.z` (cần đăng nhập GitHub),
+  trong đó có `IPFinder-Offline-x.y.z.zip`.
 
-### 2. Tải Npcap (một lần, trên máy có Internet)
-IP Finder cần **Npcap** (driver bắt gói tin, giống Wireshark). Giấy phép Npcap bản miễn phí
-**không cho phép đóng gói kèm**, nên bạn tự tải một lần tại https://npcap.com
-(file `npcap-x.yz.exe`). Nếu IPC đã cài Wireshark thì thường đã có Npcap, bỏ qua bước này.
+Nội dung gói:
+```
+IPFinder-Offline-1.2.0\
+ ├─ IPFinder-Setup-1.2.0.exe     bộ cài (chọn ngôn ngữ khi cài)
+ ├─ Download-Npcap.bat           chạy trên máy CÓ Internet để tải Npcap vào thư mục này
+ ├─ README-FIRST.txt             hướng dẫn nhanh Việt / Anh / Trung
+ ├─ README.md
+ └─ Portable\                    bản chạy ngay không cần cài (IPFinder\IPFinder.exe, ipfinder-cli.exe)
+```
 
-> Bộ cài Wireshark (bản offline) cũng có kèm Npcap. Đây là một cách khác để cài khi không có mạng.
+### 2. Npcap – tải bản nào?
+Trên trang https://npcap.com/#download, mục *Downloading and Installing Npcap Free Edition*, chọn
+**“Npcap 1.90 installer”** (hoặc bản mới hơn). Đây là **một file `npcap-1.90.exe` duy nhất**, dùng chung cho
+Windows 7/8/10/11, cả 32-bit, 64-bit và ARM64.
+**Không** cần tải *SDK*, *debug symbols* hay *source code*.
+Cách nhanh hơn: chạy `Download-Npcap.bat` trong gói offline, script sẽ tải file đó vào đúng chỗ.
+
+- Giấy phép Npcap bản miễn phí **không cho phép đóng gói kèm**, nên gói offline không chứa sẵn Npcap.
+- Bản miễn phí chỉ được cài trên **tối đa 5 máy**. Cần cài nhiều hơn 5 máy thì phải mua **Npcap OEM**.
+- Nếu IPC đã cài Wireshark thì thường đã có Npcap, bỏ qua bước này. Lưu ý: Npcap chỉ được dùng không giới hạn số máy khi **chỉ** dùng với Nmap/Wireshark, nên máy nào dùng IP Finder thì vẫn tính vào giới hạn 5 máy.
 
 ### 3. Chép qua USB và cài
-```
-USB:\
- ├─ IPFinder-Setup-1.1.0.exe
- └─ npcap-1.xx.exe          ← đặt CÙNG THƯ MỤC
-```
-Chạy `IPFinder-Setup-1.1.0.exe`. Nếu máy chưa có Npcap, bộ cài **tự tìm và chạy `npcap-*.exe`**
-trong cùng thư mục (khi cài Npcap nhớ tick *WinPcap API-compatible Mode*).
-Sau khi cài xong sẽ có biểu tượng **IP Finder** trên Desktop / Start Menu. Chương trình tự xin quyền Administrator.
+Đặt `npcap-1.90.exe` **cùng thư mục** với `IPFinder-Setup-1.2.0.exe`, chép cả thư mục sang máy đích rồi chạy Setup.
+- Bộ cài hỏi ngôn ngữ; ngôn ngữ chọn lúc cài là ngôn ngữ mặc định của chương trình.
+- Nếu máy chưa có Npcap, bộ cài **tự chạy `npcap-*.exe`** cùng thư mục (khi cài Npcap nhớ tick *WinPcap API-compatible Mode*).
+- Cài xong có biểu tượng **IP Finder** trên Desktop / Start Menu. Chương trình tự xin quyền Administrator.
 
-**Bản portable** (không cần cài): giải nén `IPFinder-portable-x.y.z.zip`, chạy `IPFinder\IPFinder.exe`
-(vẫn cần Npcap).
+**Bản portable** (không cần cài): chạy `Portable\IPFinder\IPFinder.exe` (vẫn cần Npcap).
 
 ### Tự build bộ cài
 Trên một máy Windows có Internet: cài Python 3.8 x64 (để hỗ trợ cả Windows 7) và
@@ -74,6 +84,9 @@ sudo python3 ipfinder.py          # dòng lệnh
 ## Giao diện
 
 ![Giao diện IP Finder](docs/screenshot.png)
+
+Đổi ngôn ngữ **Tiếng Việt / English / 中文** ở góc trên bên phải; chương trình nhớ lựa chọn. Đổi được cả khi
+đang dò, kết quả không bị mất ([ảnh English](docs/screenshot-en.png), [ảnh 中文](docs/screenshot-zh.png)).
 
 1. **Chọn card mạng** đang cắm thiết bị (giữ Ctrl để chọn nhiều card / nhiều lớp mạng).
 2. Chọn thời gian, dải quét. Nếu mạng đang chạy sản xuất mà muốn an toàn tuyệt đối, tick **Chỉ nghe**.
@@ -152,7 +165,7 @@ Hoặc lọc theo MAC in trên tem: `--mac 00:d0:24:12`. Cột *HÃNG* tra theo 
 
 | Hiện tượng | Cách xử lý |
 |---|---|
-| Không thấy NIC / lỗi pcap / báo thiếu Npcap | Cài Npcap (xem mục Cài đặt), chạy bằng **Administrator** |
+| Không thấy NIC / lỗi pcap / báo thiếu Npcap | Cài Npcap 1.90 (xem mục Cài đặt), chạy bằng **Administrator** |
 | Windows 7 báo thiếu `api-ms-win-crt-*.dll` | Cài Windows Update KB2999226 (Universal C Runtime) – tải offline từ Microsoft |
 | Thấy MAC nhưng "CHƯA THẤY IPv4" | Bật/tắt nguồn thiết bị trong lúc dò (cách chắc chắn nhất); hoặc quét rộng hơn `--preset 192` / `--range ...` |
 | "DHCP – CHƯA CÓ IP" | Thiết bị đang chờ DHCP. Cần chạy DHCP/BOOTP server trên NIC đó (tool BOOTP của hãng, Tftpd64, dnsmasq) để cấp IP |

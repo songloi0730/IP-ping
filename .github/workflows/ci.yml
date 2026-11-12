@@ -57,15 +57,27 @@ jobs:
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
           & $iscc "/DAppVersion=$v" installer\ipfinder.iss
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          # Gói offline: Setup + script tải Npcap + hướng dẫn 3 ngôn ngữ + bản portable
+          $pkg = "dist\offline\IPFinder-Offline-$v"
+          New-Item -ItemType Directory -Force "$pkg\Portable" | Out-Null
+          Copy-Item "dist\IPFinder-Setup-$v.exe" $pkg
+          Copy-Item installer\offline\Download-Npcap.bat $pkg
+          Copy-Item README.md $pkg
+          (Get-Content -Raw -Encoding UTF8 installer\offline\README-FIRST.txt).Replace('{VER}', $v) | Set-Content -NoNewline -Encoding utf8BOM "$pkg\README-FIRST.txt"
+          Copy-Item -Recurse dist\IPFinder "$pkg\Portable\IPFinder"
+          Copy-Item dist\ipfinder-cli.exe "$pkg\Portable\"
+          Compress-Archive -Path $pkg -DestinationPath "dist\IPFinder-Offline-$v.zip"
           Compress-Archive -Path dist\IPFinder, dist\ipfinder-cli.exe, README.md -DestinationPath "dist\IPFinder-portable-$v.zip"
           Get-ChildItem dist
       - name: Thử cài / gỡ im lặng
         run: |
           $setup = Get-ChildItem dist\IPFinder-Setup-*.exe | Select-Object -First 1
-          $p = Start-Process -FilePath $setup.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+          $p = Start-Process -FilePath $setup.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/LANG=zh' -Wait -PassThru
           if ($p.ExitCode -ne 0) { exit 1 }
           $app = "$env:ProgramFiles\IP Finder"
           Get-ChildItem $app | Select-Object -First 10
+          Get-Content "$app\ipfinder.ini"
+          if (-not (Select-String -Path "$app\ipfinder.ini" -Pattern 'lang=zh' -Quiet)) { Write-Host "ipfinder.ini thiếu lang=zh"; exit 1 }
           & "$app\ipfinder-cli.exe" selftest
           if ($LASTEXITCODE -ne 0) { exit 1 }
           $p = Start-Process -FilePath "$app\IPFinder.exe" -ArgumentList '--selftest', "$PWD\gui-installed.txt" -Wait -PassThru
@@ -77,6 +89,7 @@ jobs:
         with:
           name: IPFinder-windows-${{ env.APP_VERSION }}
           path: |
+            dist/IPFinder-Offline-*.zip
             dist/IPFinder-Setup-*.exe
             dist/IPFinder-portable-*.zip
 
