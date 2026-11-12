@@ -18,9 +18,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y iproute2 iputils-arping
-          sudo python3 -m pip install -r requirements.txt
+          python -m pip install -r requirements.txt
       - name: Chạy lab test
-        run: sudo -E env "PATH=$PATH" bash tests/run_lab_test.sh
+        run: sudo env "PATH=$PATH" bash tests/run_lab_test.sh
 
   build-windows:
     name: Build ipfinder.exe (Windows)
