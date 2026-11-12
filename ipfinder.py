@@ -46,7 +46,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 IS_WINDOWS = platform.system() == "Windows"
 
@@ -111,9 +111,40 @@ PRESETS = {
 # --------------------------------------------------------------------------------------
 # Tiện ích
 # --------------------------------------------------------------------------------------
+class IPFinderError(Exception):
+    """Lỗi người dùng cần thấy (giao diện hiển thị hộp thoại, CLI in ra rồi thoát)."""
+
+
 def die(msg: str, code: int = 1) -> None:
-    print("LỖI: " + msg)
-    sys.exit(code)
+    raise IPFinderError(msg)
+
+
+_log_fn = None
+
+
+def set_logger(fn) -> None:
+    """Giao diện gọi hàm này để nhận log thay vì in ra console."""
+    global _log_fn
+    _log_fn = fn
+
+
+def log(msg: str) -> None:
+    if _log_fn is not None:
+        _log_fn(msg)
+    else:
+        print(msg, flush=True)
+
+
+def npcap_installed() -> bool:
+    """Windows: kiểm tra Npcap (hoặc WinPcap) đã cài chưa. Các hệ khác luôn True."""
+    if not IS_WINDOWS:
+        return True
+    root = os.environ.get("SystemRoot", r"C:\Windows")
+    for p in (os.path.join(root, "System32", "Npcap", "wpcap.dll"),
+              os.path.join(root, "System32", "wpcap.dll")):
+        if os.path.exists(p):
+            return True
+    return False
 
 
 def is_admin() -> bool:
@@ -372,7 +403,7 @@ class Registry:
 
     def _log(self, s: str) -> None:
         if self.verbose:
-            print(time.strftime("%H:%M:%S ") + s, flush=True)
+            log(time.strftime("%H:%M:%S ") + s)
 
     def seen(self, nic: str, mac: str) -> None:
         with self.lock:
@@ -712,21 +743,22 @@ class Prober:
         total = len(targets) * len(sources)
         if total == 0:
             return
-        print(f"[{self.nic.name}] Quét ARP {len(targets)} IP{label} "
-              f"(IP nguồn: {', '.join(sources)}), ~{total / self.rate:.0f}s ...", flush=True)
+        log(f"[{self.nic.name}] Quét ARP {len(targets)} IP{label} "
+            f"(IP nguồn: {', '.join(sources)}), ~{total / self.rate:.0f}s ...")
         interval = 1.0 / self.rate
         t_next = time.perf_counter()
         sent = 0
         last_report = time.time()
-        for src_ip in sources:
-            spa = socket.inet_aton(src_ip)
-            for t in targets:
+        spas = [socket.inet_aton(x) for x in sources]
+        arp_hdr = struct.pack("!HHBBH", 1, ETH_IPV4, 6, 4, 1) + self.mymac
+        for t in targets:  # mỗi IP gửi lần lượt các kiểu IP nguồn (xen kẽ, không quét 2 lượt)
+            if t in own:
+                continue
+            tpa = socket.inet_aton(t)
+            for spa in spas:
                 if self.stop.is_set():
                     return
-                if t in own:
-                    continue
-                arp = struct.pack("!HHBBH", 1, ETH_IPV4, 6, 4, 1) + self.mymac + spa + b"\x00" * 6 + socket.inet_aton(t)
-                self._send(hdr + arp)
+                self._send(hdr + arp_hdr + spa + b"\x00" * 6 + tpa)
                 sent += 1
                 t_next += interval
                 d = t_next - time.perf_counter()
@@ -734,9 +766,9 @@ class Prober:
                     time.sleep(d)
                 elif d < -1:
                     t_next = time.perf_counter()
-                if time.time() - last_report > 10:
-                    last_report = time.time()
-                    print(f"[{self.nic.name}]   ... đã gửi {sent}/{total}", flush=True)
+            if time.time() - last_report > 10:
+                last_report = time.time()
+                log(f"[{self.nic.name}]   ... đã gửi {sent}/{total}")
 
     def arp_probe_one(self, ip: str, src_ip: str = "0.0.0.0") -> None:
         hdr = mac_bytes(BROADCAST) + self.mymac + struct.pack("!H", ETH_ARP)
@@ -780,7 +812,7 @@ def active_round(prober: Prober, args, targets: List[str], first: bool) -> None:
         own_set = set(own_targets)
         prober.arp_sweep([t for t in targets if t not in own_set], args.arp_src, " (dải mặc định/tự chọn)")
         if not prober.stop.is_set():
-            print(f"[{prober.nic.name}] Quét ARP xong, tiếp tục nghe...", flush=True)
+            log(f"[{prober.nic.name}] Quét ARP xong, tiếp tục nghe...")
 
 
 def classify(dev: Device, nic: Optional[Nic]) -> str:
@@ -844,6 +876,101 @@ def print_results(reg: Registry, nics: List[Nic], baseline: Optional[Set[str]] =
     return devs
 
 
+class Scanner:
+    """Chạy dò (nghe + hỏi) trên các NIC đã chọn, ở các luồng nền. Dùng chung cho CLI và giao diện."""
+
+    def __init__(self, nics: List[Nic], args, reg: Registry):
+        self.nics = nics
+        self.args = args
+        self.reg = reg
+        self.targets = [] if (args.passive or args.no_arp) else build_targets(args)
+        self.sniffers: list = []
+        self.probers: List[Prober] = []
+        self.stop_all = threading.Event()
+
+    def estimate_arp_seconds(self) -> float:
+        """Thời gian (giây) ước tính để quét ARP xong trên mỗi NIC."""
+        if self.args.passive or self.args.no_arp:
+            return 0.0
+        per_ip = 2 if self.args.arp_src == "both" else 1
+        worst = 0
+        for n in self.nics:
+            own = 0 if self.args.no_own_subnet else len(hosts_of([x for x in n.networks if x.prefixlen >= 22]))
+            worst = max(worst, own + len(self.targets) * per_ip)
+        return worst / max(10, self.args.rate)
+
+    def start(self) -> None:
+        for n in self.nics:
+            try:
+                self.sniffers.append(start_sniffer(n, self.reg))
+            except Exception as e:
+                log(f"[{n.name}] Không mở được card để nghe: {e}")
+        if not self.sniffers:
+            die("không nghe được trên card nào. Chạy bằng quyền Administrator/root; Windows cần cài Npcap.")
+        if self.args.passive:
+            return
+        for n in self.nics:
+            try:
+                p = Prober(n, self.args.rate)
+            except Exception as e:
+                log(f"[{n.name}] Không gửi được gói trên card này: {e}")
+                continue
+            self.probers.append(p)
+            threading.Thread(target=self._active_loop, args=(p,), daemon=True).start()
+
+    def _active_loop(self, p: Prober) -> None:
+        first = True
+        while not self.stop_all.is_set():
+            try:
+                active_round(p, self.args, self.targets, first)
+            except Exception as e:
+                log(f"[{p.nic.name}] lỗi khi gửi gói dò: {e}")
+                return
+            first = False
+            self.stop_all.wait(self.args.interval)
+
+    def stop(self) -> None:
+        self.stop_all.set()
+        for p in self.probers:
+            p.stop.set()
+        time.sleep(1.0)  # chờ trả lời muộn
+        for sn in self.sniffers:
+            try:
+                sn.stop()
+            except Exception:
+                pass
+        for p in self.probers:
+            p.close()
+        self.sniffers, self.probers = [], []
+
+
+def select_nics(nics: List[Nic], keys: List[str]) -> List[Nic]:
+    sel: List[Nic] = []
+    for key in keys:
+        if key.lower() == "all":
+            sel = list(nics)
+            break
+        sel.append(find_nic(nics, key))
+    return list({n.name: n for n in sel}.values())
+
+
+def export_results(devs: List[Device], nics: List[Nic], path: str, sel_labels: Optional[List[str]] = None,
+                   force_json: bool = False) -> None:
+    by_name = {n.name: n for n in nics}
+    if path.lower().endswith(".csv") and not force_json:
+        with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f)
+            w.writerow(["nic", "mac", "vendor", "ips", "status", "names", "dhcp", "info"])
+            for d in devs:
+                w.writerow([d.nic, d.mac, d.vendor, " ".join(d.best_ips()), classify(d, by_name.get(d.nic)),
+                            " | ".join(sorted(d.names)), d.dhcp, json.dumps(d.info, ensure_ascii=False)])
+    else:
+        data = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "nics": sel_labels or [],
+                "devices": [d.to_dict() for d in devs]}
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+
 def cmd_find(args) -> int:
     nics = get_nics()
     if not nics:
@@ -851,13 +978,7 @@ def cmd_find(args) -> int:
     if not args.iface:
         print_nics(nics)
         die("hãy chọn card bằng --iface <tên hoặc số> (hoặc --iface all).")
-    sel: List[Nic] = []
-    for key in args.iface:
-        if key.lower() == "all":
-            sel = nics
-            break
-        sel.append(find_nic(nics, key))
-    sel = list({n.name: n for n in sel}.values())
+    sel = select_nics(nics, args.iface)
 
     baseline: Optional[Set[str]] = None
     if args.diff:
@@ -867,87 +988,33 @@ def cmd_find(args) -> int:
         except Exception as e:
             die(f"không đọc được file baseline '{args.diff}': {e}")
 
-    targets = [] if (args.passive or args.no_arp) else build_targets(args)
     reg = Registry(verbose=not args.quiet, mac_filter=args.mac)
+    scanner = Scanner(sel, args, reg)
     print(f"IP Finder {__version__} - dò trong {args.time}s trên: " + ", ".join(n.name for n in sel))
     for n in sel:
         print("  " + n.label())
+    est = scanner.estimate_arp_seconds()
+    if est > args.time:
+        print(f"!!! Quét ARP cần khoảng {est:.0f}s nhưng --time chỉ {args.time}s: chưa quét hết dải. "
+              f"Nên dùng --time {int(est) + 15}.")
     print(">>> MẸO: trong lúc dò hãy TẮT/BẬT NGUỒN hoặc RÚT/CẮM LẠI CÁP thiết bị cần tìm.")
     print(">>> Nhấn Ctrl+C để dừng sớm.\n")
-
-    sniffers = []
-    for n in sel:
-        try:
-            sniffers.append(start_sniffer(n, reg))
-        except Exception as e:
-            print(f"[{n.name}] Không mở được card để nghe: {e}")
-    if not sniffers:
-        die("không nghe được trên card nào. Chạy bằng quyền Administrator/root, Windows cần Npcap.")
-
-    probers: List[Prober] = []
-    threads: List[threading.Thread] = []
-    stop_all = threading.Event()
-
-    def active_loop(p: Prober) -> None:
-        first = True
-        while not stop_all.is_set():
-            try:
-                active_round(p, args, targets, first)
-            except Exception as e:
-                print(f"[{p.nic.name}] lỗi khi gửi gói dò: {e}")
-                return
-            first = False
-            stop_all.wait(args.interval)
-
-    if not args.passive:
-        for n in sel:
-            try:
-                p = Prober(n, args.rate)
-            except Exception as e:
-                print(f"[{n.name}] Không gửi được gói trên card này: {e}")
-                continue
-            probers.append(p)
-            th = threading.Thread(target=active_loop, args=(p,), daemon=True)
-            th.start()
-            threads.append(th)
-
+    scanner.start()
     t_end = time.time() + args.time
     try:
         while time.time() < t_end:
             time.sleep(0.25)
     except KeyboardInterrupt:
         print("\nĐã dừng theo yêu cầu.")
-    stop_all.set()
-    for p in probers:
-        p.stop.set()
-    time.sleep(1.0)  # chờ trả lời muộn
-    for s in sniffers:
-        try:
-            s.stop()
-        except Exception:
-            pass
-    for p in probers:
-        p.close()
+    scanner.stop()
 
     devs = print_results(reg, nics, baseline)
-    data = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "nics": [n.label() for n in sel],
-            "devices": [d.to_dict() for d in devs]}
+    labels = [n.label() for n in sel]
     if args.save:
-        with open(args.save, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        export_results(devs, nics, args.save, labels, force_json=True)
         print(f"Đã lưu danh sách (baseline) vào {args.save}")
     if args.out:
-        if args.out.lower().endswith(".csv"):
-            with open(args.out, "w", newline="", encoding="utf-8-sig") as f:
-                w = csv.writer(f)
-                w.writerow(["nic", "mac", "vendor", "ips", "status", "names", "dhcp", "info"])
-                by_name = {n.name: n for n in nics}
-                for d in devs:
-                    w.writerow([d.nic, d.mac, d.vendor, " ".join(d.best_ips()), classify(d, by_name.get(d.nic)),
-                                " | ".join(sorted(d.names)), d.dhcp, json.dumps(d.info, ensure_ascii=False)])
-        else:
-            with open(args.out, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+        export_results(devs, nics, args.out, labels)
         print(f"Đã xuất kết quả ra {args.out}")
     return 0 if devs else 3
 
@@ -975,109 +1042,140 @@ def arp_check_used(nic: Nic, ips: List[str], wait: float = 1.5) -> Set[str]:
     return used & set(ips)
 
 
-def run_cmd(cmd: List[str]) -> int:
-    print("  > " + " ".join(f'"{c}"' if " " in c else c for c in cmd))
+def run_cmd(cmd: List[str]) -> Tuple[int, str]:
+    log("  > " + " ".join(f'"{c}"' if " " in c else c for c in cmd))
+    kw: dict = {}
+    if IS_WINDOWS:
+        kw["creationflags"] = 0x08000000  # CREATE_NO_WINDOW: không hiện cửa sổ đen khi chạy từ giao diện
+        kw["encoding"] = "oem"
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True)
-    except FileNotFoundError as e:
-        print(f"    lỗi: {e}")
-        return 1
-    out = (r.stdout or "") + (r.stderr or "")
-    if out.strip():
-        print("    " + out.strip().replace("\n", "\n    "))
-    return r.returncode
+        r = subprocess.run(cmd, capture_output=True, text=True, errors="replace", **kw)
+    except (FileNotFoundError, LookupError) as e:
+        log(f"    lỗi: {e}")
+        return 1, str(e)
+    out = ((r.stdout or "") + (r.stderr or "")).strip()
+    if out:
+        log("    " + out.replace("\n", "\n    "))
+    return r.returncode, out
 
 
-def nic_os_name(nic: Nic) -> str:
-    return nic.name
+@dataclass
+class AccessPlan:
+    nic: Nic
+    dev_ip: str
+    net: ipaddress.IPv4Network
+    my_ip: Optional[str]          # None = đã cùng subnet, không cần thêm IP
+    conflicts: List[str]
+    used: Set[str]
+    add: List[List[str]]
+    rem: List[List[str]]
+
+
+def access_cmds(nic: Nic, my_ip: str, prefix: int) -> Tuple[List[List[str]], List[List[str]]]:
+    net = ipaddress.IPv4Network(f"{my_ip}/{prefix}", strict=False)
+    if IS_WINDOWS:
+        add = [["netsh", "interface", "ipv4", "add", "address", f"name={nic.name}", f"address={my_ip}",
+                f"mask={net.netmask}"]]
+        rem = [["netsh", "interface", "ipv4", "delete", "address", f"name={nic.name}", f"address={my_ip}"]]
+    else:
+        add = [["ip", "addr", "add", f"{my_ip}/{prefix}", "dev", nic.name]]
+        rem = [["ip", "addr", "del", f"{my_ip}/{prefix}", "dev", nic.name]]
+    return add, rem
+
+
+def plan_access(nics: List[Nic], nic: Nic, dev_ip: str, prefix: int = 24, my_ip: Optional[str] = None) -> AccessPlan:
+    """Chọn IP trống cùng subnet với thiết bị để gán thêm lên NIC (không chạy lệnh nào)."""
+    dip = ipaddress.IPv4Address(dev_ip)
+    net = ipaddress.IPv4Network(f"{dip}/{prefix}", strict=False)
+    if any(dip in n for n in nic.networks):
+        return AccessPlan(nic, str(dip), net, None, [], set(), [], [])
+    conflicts = [f"'{o.name}' ({onet})" for o in nics for onet in o.networks if onet.overlaps(net)]
+    if my_ip:
+        cands = [my_ip]
+    else:
+        hosts = [str(h) for h in net.hosts()] if net.prefixlen < 31 else [str(h) for h in net]
+        cands = [h for h in reversed(hosts) if h != str(dip)][:8]
+    log(f"Kiểm tra IP trống trên card '{nic.name}' (ARP probe): {', '.join(cands)} ...")
+    try:
+        used = arp_check_used(nic, cands)
+    except Exception as e:
+        log(f"  (không kiểm tra được: {e})")
+        used = set()
+    if used:
+        log("  Đang có thiết bị dùng: " + ", ".join(sorted(used)))
+    free = [c for c in cands if c not in used and c != str(dip)]
+    if not free:
+        die("không tìm được IP trống trong subnet của thiết bị. Hãy tự chỉ định IP cho máy tính.")
+    add, rem = access_cmds(nic, free[0], net.prefixlen)
+    return AccessPlan(nic, str(dip), net, free[0], conflicts, used, add, rem)
+
+
+def apply_cmds(cmds: List[List[str]]) -> Tuple[bool, str]:
+    outs = []
+    ok = True
+    for c in cmds:
+        rc, out = run_cmd(c)
+        outs.append(out)
+        ok = ok and rc == 0
+    return ok, "\n".join(o for o in outs if o)
+
+
+def verify_device(nic: Nic, ip: str) -> bool:
+    time.sleep(2 if IS_WINDOWS else 0.5)  # chờ hệ điều hành áp dụng IP
+    try:
+        return ip in arp_check_used(nic, [ip])
+    except Exception:
+        return False
 
 
 def cmd_access(args) -> int:
     nics = get_nics()
     nic = find_nic(nics, args.iface)
-    dev_ip = ipaddress.IPv4Address(args.ip)
-    net = ipaddress.IPv4Network(f"{dev_ip}/{args.prefix}", strict=False)
-    mask = str(net.netmask)
-    osname = nic_os_name(nic)
-
     if args.remove:
-        ip = args.remove
-        print(f"Gỡ IP phụ {ip} khỏi card '{osname}':")
-        cmds = ([["netsh", "interface", "ipv4", "delete", "address", f"name={osname}", f"address={ip}"]]
-                if IS_WINDOWS else [["ip", "addr", "del", f"{ip}/{args.prefix}", "dev", osname]])
-        return max(run_cmd(c) for c in cmds) if args.apply else (print_cmds(cmds) or 0)
+        _, rem = access_cmds(nic, args.remove, args.prefix)
+        print(f"Gỡ IP phụ {args.remove} khỏi card '{nic.name}':")
+        if not args.apply:
+            print_cmds(rem)
+            return 0
+        ok, _ = apply_cmds(rem)
+        return 0 if ok else 1
 
-    if any(dev_ip in n for n in nic.networks):
-        print(f"IP {dev_ip} đã cùng subnet với card '{osname}' -> truy cập trực tiếp được, không cần thêm IP.")
+    plan = plan_access(nics, nic, args.ip, args.prefix, args.my_ip)
+    if plan.my_ip is None:
+        print(f"IP {plan.dev_ip} đã cùng subnet với card '{nic.name}' -> truy cập trực tiếp được, không cần thêm IP.")
         return 0
-
-    conflict = []
-    for other in nics:
-        for onet in other.networks:
-            if onet.overlaps(net):
-                conflict.append(f"'{other.name}' ({onet})")
-    if conflict:
-        print("CẢNH BÁO: subnet " + str(net) + " TRÙNG với: " + ", ".join(conflict))
+    if plan.conflicts:
+        print("CẢNH BÁO: subnet " + str(plan.net) + " TRÙNG với: " + ", ".join(plan.conflicts))
         print("  Thêm IP này có thể làm Windows/Linux định tuyến SAI và mất kết nối với thiết bị khác!")
         print("  Cách an toàn: rút cáp NIC kia tạm thời, hoặc dùng prefix nhỏ hơn (VD --prefix 30 / 29).")
         if args.apply and not args.force:
             die("đã dừng. Thêm --force nếu bạn hiểu rủi ro.")
 
-    # Chọn IP trống trong subnet của thiết bị
-    if args.my_ip:
-        cands = [args.my_ip]
-    else:
-        hosts = [str(h) for h in net.hosts()] if net.prefixlen < 31 else [str(h) for h in net]
-        prefer = [h for h in reversed(hosts) if h != str(dev_ip)][:8]
-        cands = prefer
-    print(f"Kiểm tra IP trống trên card '{osname}' (ARP probe): {', '.join(cands)} ...")
-    try:
-        used = arp_check_used(nic, cands)
-    except Exception as e:
-        print(f"  (không kiểm tra được: {e})")
-        used = set()
-    free = [c for c in cands if c not in used and c != str(dev_ip)]
-    if used:
-        print("  Đang có thiết bị dùng: " + ", ".join(sorted(used)))
-    if not free:
-        die("không tìm được IP trống. Dùng --my-ip để chỉ định.")
-    my_ip = free[0]
-
-    if IS_WINDOWS:
-        add = [["netsh", "interface", "ipv4", "add", "address", f"name={osname}", f"address={my_ip}", f"mask={mask}"]]
-        rem = [["netsh", "interface", "ipv4", "delete", "address", f"name={osname}", f"address={my_ip}"]]
-    else:
-        add = [["ip", "addr", "add", f"{my_ip}/{net.prefixlen}", "dev", osname]]
-        rem = [["ip", "addr", "del", f"{my_ip}/{net.prefixlen}", "dev", osname]]
-
-    print(f"\nThêm IP phụ {my_ip}/{net.prefixlen} lên card '{osname}' để truy cập thiết bị {dev_ip}.")
+    print(f"\nThêm IP phụ {plan.my_ip}/{plan.net.prefixlen} lên card '{nic.name}' để truy cập thiết bị {plan.dev_ip}.")
     print("IP chính và các kết nối hiện tại của card KHÔNG bị thay đổi.")
     if IS_WINDOWS:
         print("Lưu ý Windows: nếu card đang để DHCP (Obtain IP automatically) thì netsh sẽ báo lỗi;"
               " khi đó cần đặt IP tĩnh cho card trước.")
-    if args.apply:
-        if not is_admin():
-            die("cần quyền Administrator/root để thêm IP.")
-        rc = max(run_cmd(c) for c in add)
-        if rc != 0:
-            die("thêm IP thất bại (xem thông báo ở trên).")
-        print(f"\nXONG. Mở trình duyệt / tool của hãng tới: {dev_ip}")
-        print("Sau khi đổi IP thiết bị xong, gỡ IP phụ bằng:")
-        print(f"   ipfinder access --iface \"{osname}\" --ip {dev_ip} --prefix {net.prefixlen} --remove {my_ip} --apply")
-        time.sleep(2 if IS_WINDOWS else 0.5)  # chờ hệ điều hành áp dụng IP
-        try:
-            ok = str(dev_ip) in arp_check_used(nic, [str(dev_ip)])
-            print(f"Kiểm tra: thiết bị {dev_ip} " + ("TRẢ LỜI ARP -> đã truy cập được." if ok else
-                  "chưa trả lời ARP (có thể thiết bị chặn/đang khởi động; thử mở web/tool hãng)."))
-        except Exception:
-            pass
-        if args.ping:
-            run_cmd(["ping", "-n" if IS_WINDOWS else "-c", "3", str(dev_ip)])
-    else:
+    if not args.apply:
         print("\nLệnh thêm (chạy với quyền Admin, hoặc thêm --apply để tool tự chạy):")
-        print_cmds(add)
+        print_cmds(plan.add)
         print("Lệnh gỡ sau khi xong:")
-        print_cmds(rem)
+        print_cmds(plan.rem)
+        return 0
+    if not is_admin():
+        die("cần quyền Administrator/root để thêm IP.")
+    ok, _ = apply_cmds(plan.add)
+    if not ok:
+        die("thêm IP thất bại (xem thông báo ở trên).")
+    print(f"\nXONG. Mở trình duyệt / tool của hãng tới: {plan.dev_ip}")
+    print("Sau khi đổi IP thiết bị xong, gỡ IP phụ bằng:")
+    print(f"   ipfinder access --iface \"{nic.name}\" --ip {plan.dev_ip} --prefix {plan.net.prefixlen} "
+          f"--remove {plan.my_ip} --apply")
+    ok = verify_device(nic, plan.dev_ip)
+    print(f"Kiểm tra: thiết bị {plan.dev_ip} " + ("TRẢ LỜI ARP -> đã truy cập được." if ok else
+          "chưa trả lời ARP (có thể thiết bị chặn/đang khởi động; thử mở web/tool hãng)."))
+    if args.ping:
+        run_cmd(["ping", "-n" if IS_WINDOWS else "-c", "3", plan.dev_ip])
     return 0
 
 
@@ -1141,6 +1239,20 @@ def dcp_result_ok(blocks: Optional[List[Tuple[int, int, bytes]]]) -> Tuple[bool,
     return True, "OK (không có mã phản hồi)"
 
 
+def dcp_set_ip(nic: Nic, mac: str, ip: str, mask: str, gw: str = "0.0.0.0", permanent: bool = True) -> Tuple[bool, str]:
+    qual = 0x0001 if permanent else 0x0000
+    body = (struct.pack("!H", qual) + socket.inet_aton(str(ipaddress.IPv4Address(ip))) +
+            socket.inet_aton(str(ipaddress.IPv4Address(mask))) + socket.inet_aton(str(ipaddress.IPv4Address(gw or "0.0.0.0"))))
+    blocks = struct.pack("!BBH", 1, 2, len(body)) + body
+    return dcp_result_ok(dcp_request(nic, mac_norm(mac), 4, blocks))
+
+
+def dcp_blink(nic: Nic, mac: str) -> Tuple[bool, str]:
+    body = struct.pack("!HH", 0, 0x0100)
+    blocks = struct.pack("!BBH", 5, 3, len(body)) + body
+    return dcp_result_ok(dcp_request(nic, mac_norm(mac), 4, blocks))
+
+
 def cmd_dcp_setip(args) -> int:
     nics = get_nics()
     nic = find_nic(nics, args.iface)
@@ -1157,10 +1269,7 @@ def cmd_dcp_setip(args) -> int:
         if mac_norm(ans) != mac:
             print("Huỷ.")
             return 1
-    qual = 0x0001 if perm else 0x0000
-    body = struct.pack("!H", qual) + socket.inet_aton(ip) + socket.inet_aton(mask) + socket.inet_aton(gw)
-    blocks = struct.pack("!BBH", 1, 2, len(body)) + body
-    ok, msg = dcp_result_ok(dcp_request(nic, mac, 4, blocks))
+    ok, msg = dcp_set_ip(nic, mac, ip, mask, gw, perm)
     print(("THÀNH CÔNG: " if ok else "THẤT BẠI: ") + msg)
     if ok:
         print("Chạy lại 'ipfinder find' để xác nhận IP mới.")
@@ -1170,11 +1279,31 @@ def cmd_dcp_setip(args) -> int:
 def cmd_dcp_blink(args) -> int:
     nics = get_nics()
     nic = find_nic(nics, args.iface)
-    mac = mac_norm(args.mac)
-    body = struct.pack("!HH", 0, 0x0100)
-    blocks = struct.pack("!BBH", 5, 3, len(body)) + body
-    ok, msg = dcp_result_ok(dcp_request(nic, mac, 4, blocks))
+    ok, msg = dcp_blink(nic, args.mac)
     print(("Đã gửi lệnh nháy đèn: " if ok else "THẤT BẠI: ") + msg)
+    return 0 if ok else 1
+
+
+def cmd_selftest(_args) -> int:
+    """Kiểm tra nhanh bản đóng gói (không cần Npcap): tra hãng theo MAC, giải mã DCP / EtherNet/IP."""
+    ok = True
+    v = vendor_of("00:d0:24:00:00:01")
+    print("vendor 00:d0:24 =", v)
+    ok &= "Cognex" in v
+    reg = Registry(verbose=False)
+    ipb = struct.pack("!H", 1) + socket.inet_aton("192.168.0.10") + socket.inet_aton("255.255.255.0") + b"\0" * 4
+    blocks = struct.pack("!BBH", 1, 2, len(ipb)) + ipb
+    handle_dcp(reg, "t", "00:1b:1b:00:00:01", struct.pack("!HBBIHH", 0xFEFF, 5, 1, 1, 0, len(blocks)) + blocks)
+    item = (struct.pack("<H", 1) + struct.pack("!HH4s8s", 2, ENIP_PORT, socket.inet_aton("10.1.2.3"), b"\0" * 8) +
+            struct.pack("<HHHBBHI", 1, 12, 1, 1, 0, 0, 1) + b"\x04TEST" + b"\x03")
+    cpf = struct.pack("<HHH", 1, 0x0C, len(item)) + item
+    handle_enip(reg, "t", "00:d0:24:00:00:02", "10.1.2.3", struct.pack("<HHII8sI", 0x63, len(cpf), 0, 0, b"", 0) + cpf)
+    found = {ip for d in reg.list() for ip in d.ips}
+    print("decoded IPs:", sorted(found))
+    ok &= found == {"192.168.0.10", "10.1.2.3"}
+    print("quick hosts:", len(hosts_of(parse_ranges(PRESETS["quick"]))))
+    print("npcap:", npcap_installed(), "| admin:", is_admin(), "| python:", sys.version.split()[0])
+    print("SELFTEST OK" if ok else "SELFTEST FAIL")
     return 0 if ok else 1
 
 
@@ -1213,6 +1342,8 @@ def wizard() -> int:
     args = build_parser().parse_args(argv)
     try:
         args.func(args)
+    except IPFinderError as e:
+        print("LỖI: " + str(e))
     except SystemExit:
         pass
     input("\nNhấn Enter để thoát...")
@@ -1239,7 +1370,10 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument("--version", action="version", version=__version__)
-    sp = p.add_subparsers(dest="cmd")
+    sp = p.add_subparsers(dest="cmd", metavar="{ifaces,find,access,dcp-setip,dcp-blink}")
+
+    s = sp.add_parser("selftest")  # kiểm tra bản đóng gói (dùng trong CI)
+    s.set_defaults(func=cmd_selftest)
 
     s = sp.add_parser("ifaces", help="liệt kê card mạng")
     s.set_defaults(func=cmd_ifaces)
@@ -1302,15 +1436,26 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[List[str]] = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if not argv:
-        return wizard()
+        try:
+            return wizard()
+        except IPFinderError as e:
+            print("LỖI: " + str(e))
+            input("\nNhấn Enter để thoát...")
+            return 1
     args = build_parser().parse_args(argv)
     if not getattr(args, "func", None):
         build_parser().print_help()
         return 0
     if args.cmd in ("find", "dcp-setip", "dcp-blink") and not is_admin():
         print("! Cảnh báo: không chạy bằng quyền Administrator/root, có thể không nghe/gửi được gói.")
+    if args.cmd in ("find", "ifaces", "access", "dcp-setip", "dcp-blink") and not npcap_installed():
+        print("LỖI: chưa cài Npcap. Cài file npcap-x.yz.exe (tải ở https://npcap.com, hoặc dùng bộ cài Wireshark có kèm Npcap).")
+        return 2
     try:
         return int(args.func(args) or 0)
+    except IPFinderError as e:
+        print("LỖI: " + str(e))
+        return 1
     except PermissionError:
         die("không đủ quyền. Chạy bằng Administrator (Windows) hoặc sudo (Linux).")
     except OSError as e:
