@@ -85,9 +85,9 @@ ipfinder dcp-blink --iface X --mac M             Nháy đèn thiết bị PROFIN
 | `--iface X` (lặp lại được), `--iface all` | Dò song song trên nhiều NIC / nhiều lớp mạng; kết quả ghi rõ NIC |
 | `--time 60` | Thời gian dò (giây) |
 | `--passive` | Chỉ nghe, không gửi gì (an toàn tuyệt đối cho mạng sản xuất) |
-| `--preset quick\|192\|wide\|none` | Dải quét ARP. `quick` ≈ 7.000 IP (~15 giây), `192` = 65.000 IP (~2 phút), `wide` ≈ 390.000 IP |
+| `--preset quick\|192\|wide\|none` | Dải quét ARP. `quick` ≈ 7.000 IP (~30 giây), `192` = 65.000 IP (~4,5 phút), `wide` ≈ 390.000 IP (~26 phút), tính ở tốc độ mặc định với `--arp-src both` |
 | `--range 10.20.0.0/16`, `--range 192.168.7.10-50` | Thêm dải quét |
-| `--arp-src own\|probe\|both` | IP nguồn của gói ARP. Nếu thiết bị không trả lời, thử `probe` hoặc `both` |
+| `--arp-src both\|own\|probe` | IP nguồn của gói ARP. Mặc định `both`: gửi cả IP thật của NIC lẫn `0.0.0.0` (ARP probe), vì thiết bị chạy Linux nhúng có bật `rp_filter` sẽ bỏ qua ARP đến từ subnet lạ, nhưng vẫn trả lời ARP probe. Dùng `own` để quét nhanh gấp đôi |
 | `--rate 500` | Số gói/giây tối đa |
 | `--mac 00:d0:24` | Chỉ hiện MAC bắt đầu bằng... (MAC in trên tem thiết bị) |
 | `--save base.json` / `--diff base.json` | Lưu danh sách thiết bị hiện có, lần sau đánh dấu **[MỚI]** thiết bị vừa cắm vào |
@@ -111,7 +111,7 @@ Hoặc lọc theo MAC in trên tem: `--mac 00:d0:24:12`. Cột *HÃNG* tra theo 
 | Hiện tượng | Cách xử lý |
 |---|---|
 | Không thấy NIC / lỗi pcap trên Windows | Cài Npcap, chạy bằng **Administrator** |
-| Thấy MAC nhưng "CHƯA THẤY IPv4" | Bật/tắt nguồn thiết bị trong lúc dò; thử `--preset 192 --arp-src both` |
+| Thấy MAC nhưng "CHƯA THẤY IPv4" | Bật/tắt nguồn thiết bị trong lúc dò (cách chắc chắn nhất); hoặc quét rộng hơn `--preset 192` / `--range ...` |
 | "DHCP – CHƯA CÓ IP" | Thiết bị đang chờ DHCP. Cần chạy DHCP/BOOTP server trên NIC đó (tool BOOTP của hãng, Tftpd64, dnsmasq) để cấp IP |
 | `access` báo lỗi trên Windows | Windows chỉ cho thêm IP phụ khi card dùng **IP tĩnh**. Đặt IP tĩnh cho card trước |
 | `access` báo trùng subnet NIC khác | Rút tạm cáp của NIC kia, hoặc dùng `--prefix 30` để thu hẹp subnet IP phụ |

@@ -1252,8 +1252,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="dải quét ARP: quick (mặc định), 192 (192.168.0.0/16), wide, none")
     s.add_argument("--range", "-r", action="append",
                    help="dải IP quét ARP thêm: CIDR, a.b.c.d-e.f.g.h, a.b.c.d-N (lặp lại được)")
-    s.add_argument("--arp-src", choices=["own", "probe", "both"], default="own",
-                   help="IP nguồn khi quét ARP: own=IP của NIC (mặc định), probe=0.0.0.0, both")
+    s.add_argument("--arp-src", choices=["own", "probe", "both"], default="both",
+                   help="IP nguồn khi quét ARP: both (mặc định) = gửi cả IP của NIC lẫn 0.0.0.0; "
+                        "own = chỉ IP của NIC; probe = chỉ 0.0.0.0. Thiết bị Linux có rp_filter "
+                        "bỏ qua ARP từ subnet lạ nhưng vẫn trả lời ARP probe 0.0.0.0")
     s.add_argument("--rate", type=int, default=500, help="số gói/giây tối đa (mặc định 500)")
     s.add_argument("--limit", type=int, default=500000, help="giới hạn số IP quét ARP")
     s.add_argument("--interval", type=float, default=10.0, help="chu kỳ lặp lại DCP/EtherNet-IP/ICMP (giây)")

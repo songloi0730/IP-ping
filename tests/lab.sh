@@ -2,7 +2,7 @@
 # Dựng / gỡ phòng thí nghiệm ảo để thử ipfinder trên Linux (cần root, iproute2).
 #
 #   NIC 1 "lab1" (PC: 10.50.0.1/24) - bridge, cắm 3 thiết bị:
-#       dev1  192.168.100.100  (khác subnet, nằm trong dải 'quick')   -> tìm bằng quét ARP
+#       dev1  192.168.100.100  (khác subnet, nằm trong dải 'quick', rp_filter=1) -> tìm bằng quét ARP
 #       dev2  172.31.77.9      (khác subnet, ngoài mọi dải mặc định)  -> tìm bằng DCP/EtherNet-IP/ARP thụ động
 #       dev3  10.50.0.20       (cùng subnet, thiết bị đang chạy bình thường)
 #   NIC 2 "lab2" (PC: 10.60.0.1/24) - cắm 1 thiết bị:
@@ -26,6 +26,8 @@ up() {
     ip -n dev$n link set v${n}d up
   done
   ip -n dev1 addr add 192.168.100.100/24 dev v1d
+  # dev1 giả lập thiết bị Linux nhúng có rp_filter: bỏ qua ARP từ subnet lạ, chỉ trả lời ARP probe 0.0.0.0
+  for k in all default v1d; do ip netns exec dev1 sysctl -qw net.ipv4.conf.$k.rp_filter=1; done
   ip -n dev2 addr add 172.31.77.9/24 dev v2d
   ip -n dev3 addr add 10.50.0.20/24 dev v3d
 
