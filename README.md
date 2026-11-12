@@ -29,34 +29,74 @@ ngay trên card mạng (NIC) cắm thiết bị, nên **không cần cùng subne
 - Lệnh `access` chỉ **thêm IP phụ**, không đổi IP chính của NIC. Lệnh này **từ chối chạy** nếu subnet
   mới trùng với NIC khác (để không phá định tuyến tới thiết bị khác).
 
-## Cài đặt
+## Cài đặt trên Windows – không cần Internet, không cần Python
 
-### Windows (thường gặp trên IPC)
-1. Cài **Npcap**: https://npcap.com (tick *"Install Npcap in WinPcap API-compatible Mode"*).
-2. Chọn một trong hai cách:
-   - **Không cần Python**: tải `ipfinder.exe` ở tab **Actions** của repo → lần chạy mới nhất →
-     *Artifacts* → `ipfinder-windows`. Double-click để chạy (exe tự xin quyền Administrator).
-   - **Có Python 3.8+**: `pip install -r requirements.txt`, rồi chạy `run_windows.bat`
-     bằng *Run as administrator*.
+Bộ cài `IPFinder-Setup-x.y.z.exe` đã chứa sẵn Python runtime và mọi thư viện. Máy đích
+**không cần cài Python** và **không cần mạng Internet**. Chạy được trên Windows 7 SP1, 8.1, 10, 11 (64-bit).
 
-### Linux
+### 1. Tải bộ cài (trên máy có Internet)
+- **Releases** của repo (khi có tag `v*`), hoặc
+- tab **Actions** → lần chạy CI mới nhất → mục *Artifacts* → `IPFinder-windows-x.y.z`
+  (cần đăng nhập GitHub; giải nén ra `IPFinder-Setup-x.y.z.exe` và `IPFinder-portable-x.y.z.zip`).
+
+### 2. Tải Npcap (một lần, trên máy có Internet)
+IP Finder cần **Npcap** (driver bắt gói tin, giống Wireshark). Giấy phép Npcap bản miễn phí
+**không cho phép đóng gói kèm**, nên bạn tự tải một lần tại https://npcap.com
+(file `npcap-x.yz.exe`). Nếu IPC đã cài Wireshark thì thường đã có Npcap, bỏ qua bước này.
+
+> Bộ cài Wireshark (bản offline) cũng có kèm Npcap. Đây là một cách khác để cài khi không có mạng.
+
+### 3. Chép qua USB và cài
+```
+USB:\
+ ├─ IPFinder-Setup-1.1.0.exe
+ └─ npcap-1.xx.exe          ← đặt CÙNG THƯ MỤC
+```
+Chạy `IPFinder-Setup-1.1.0.exe`. Nếu máy chưa có Npcap, bộ cài **tự tìm và chạy `npcap-*.exe`**
+trong cùng thư mục (khi cài Npcap nhớ tick *WinPcap API-compatible Mode*).
+Sau khi cài xong sẽ có biểu tượng **IP Finder** trên Desktop / Start Menu. Chương trình tự xin quyền Administrator.
+
+**Bản portable** (không cần cài): giải nén `IPFinder-portable-x.y.z.zip`, chạy `IPFinder\IPFinder.exe`
+(vẫn cần Npcap).
+
+### Tự build bộ cài
+Trên một máy Windows có Internet: cài Python 3.8 x64 (để hỗ trợ cả Windows 7) và
+[Inno Setup 6](https://jrsoftware.org/isdl.php), rồi chạy `build_windows.bat`.
+Kết quả nằm ở `dist\IPFinder-Setup-x.y.z.exe`.
+
+### Linux / chạy từ mã nguồn
 ```bash
 sudo pip install -r requirements.txt
-sudo python3 ipfinder.py
+sudo python3 ipfinder_gui.py      # giao diện
+sudo python3 ipfinder.py          # dòng lệnh
 ```
 
-## Sử dụng nhanh
+## Giao diện
 
-**Cách dễ nhất**: chạy không có tham số (hoặc double-click `ipfinder.exe`). Chương trình sẽ hỏi lần lượt
-card mạng, thời gian và dải quét.
+![Giao diện IP Finder](docs/screenshot.png)
+
+1. **Chọn card mạng** đang cắm thiết bị (giữ Ctrl để chọn nhiều card / nhiều lớp mạng).
+2. Chọn thời gian, dải quét. Nếu mạng đang chạy sản xuất mà muốn an toàn tuyệt đối, tick **Chỉ nghe**.
+3. Bấm **Bắt đầu dò**. **Trong lúc dò hãy TẮT/BẬT NGUỒN hoặc RÚT/CẮM LẠI CÁP thiết bị cần tìm.**
+4. Dòng **màu cam = KHÁC SUBNET** thường là thiết bị cần tìm. Chọn dòng đó rồi:
+   - **Truy cập (thêm IP phụ)**: tự chọn IP trống, thêm IP phụ lên card, kiểm tra thiết bị trả lời,
+     rồi mở trình duyệt. Sau đó dùng web hoặc phần mềm của hãng để đổi IP thiết bị.
+   - **Đổi IP (PROFINET)** / **Nháy đèn (PROFINET)**: dành cho thiết bị PROFINET.
+   - Nhấp đúp để mở web, chuột phải để copy IP/MAC.
+5. Xong việc bấm **Gỡ IP phụ đã thêm**. Khi thoát, chương trình cũng hỏi có gỡ không.
+
+## Dòng lệnh (CLI)
+
+Bộ cài có kèm `ipfinder-cli.exe` (Start Menu → *IP Finder (dòng lệnh)*), chạy trong cmd **Run as administrator**.
+Chạy không tham số sẽ vào chế độ hỏi-đáp.
 
 **Quy trình khuyên dùng khi tìm 1 thiết bị:**
 1. Cắm thiết bị vào NIC của IPC (trực tiếp hoặc qua switch).
-2. `ipfinder ifaces` → xem số thứ tự của card.
-3. `ipfinder find --iface 12 --time 60`
+2. `ipfinder-cli ifaces` → xem số thứ tự của card.
+3. `ipfinder-cli find --iface 12 --time 60`
 4. **Trong lúc dò, TẮT/BẬT NGUỒN thiết bị (hoặc rút/cắm lại cáp)** → thiết bị sẽ tự báo IP.
 5. Tìm dòng **KHÁC SUBNET** trong kết quả → đó thường là thiết bị cần tìm.
-6. Vào được thiết bị: `ipfinder access --iface 12 --ip 192.168.100.100 --apply`
+6. Vào được thiết bị: `ipfinder-cli access --iface 12 --ip 192.168.100.100 --apply`
    → mở web/tool của hãng để đổi IP → gỡ IP phụ bằng lệnh mà chương trình in ra.
 
 Ví dụ kết quả:
@@ -69,7 +109,9 @@ Ethernet 2   00:01:fc:01:02:03 thử 10.11.12.13     DHCP - CHƯA CÓ IP  Keyenc
 Ethernet 2   00:06:77:0a:0b:0c 10.50.0.20          cùng subnet        Sick Ag
 ```
 
-## Các lệnh
+### Các lệnh
+
+`ipfinder` dưới đây = `ipfinder-cli.exe` (Windows) hoặc `sudo python3 ipfinder.py` (Linux).
 
 ```text
 ipfinder ifaces                                  Liệt kê NIC, IP/subnet; cảnh báo subnet trùng giữa các NIC
@@ -79,7 +121,7 @@ ipfinder dcp-setip --iface X --mac M --ip ...    Đổi IP thiết bị PROFINET
 ipfinder dcp-blink --iface X --mac M             Nháy đèn thiết bị PROFINET để nhận ra nó trên tủ điện
 ```
 
-### Tuỳ chọn của `find`
+#### Tuỳ chọn của `find`
 | Tuỳ chọn | Ý nghĩa |
 |---|---|
 | `--iface X` (lặp lại được), `--iface all` | Dò song song trên nhiều NIC / nhiều lớp mạng; kết quả ghi rõ NIC |
@@ -94,7 +136,7 @@ ipfinder dcp-blink --iface X --mac M             Nháy đèn thiết bị PROFIN
 | `--out ketqua.csv` / `.json` | Xuất kết quả |
 | `--no-arp --no-dcp --no-enip --no-icmp` | Tắt từng kỹ thuật |
 
-### IPC có nhiều thiết bị trên cùng mạng
+#### IPC có nhiều thiết bị trên cùng mạng
 
 Khi switch đang có nhiều thiết bị, kết quả sẽ liệt kê tất cả. Để biết thiết bị nào mới cắm:
 
@@ -110,7 +152,8 @@ Hoặc lọc theo MAC in trên tem: `--mac 00:d0:24:12`. Cột *HÃNG* tra theo 
 
 | Hiện tượng | Cách xử lý |
 |---|---|
-| Không thấy NIC / lỗi pcap trên Windows | Cài Npcap, chạy bằng **Administrator** |
+| Không thấy NIC / lỗi pcap / báo thiếu Npcap | Cài Npcap (xem mục Cài đặt), chạy bằng **Administrator** |
+| Windows 7 báo thiếu `api-ms-win-crt-*.dll` | Cài Windows Update KB2999226 (Universal C Runtime) – tải offline từ Microsoft |
 | Thấy MAC nhưng "CHƯA THẤY IPv4" | Bật/tắt nguồn thiết bị trong lúc dò (cách chắc chắn nhất); hoặc quét rộng hơn `--preset 192` / `--range ...` |
 | "DHCP – CHƯA CÓ IP" | Thiết bị đang chờ DHCP. Cần chạy DHCP/BOOTP server trên NIC đó (tool BOOTP của hãng, Tftpd64, dnsmasq) để cấp IP |
 | `access` báo lỗi trên Windows | Windows chỉ cho thêm IP phụ khi card dùng **IP tĩnh**. Đặt IP tĩnh cho card trước |
@@ -132,9 +175,15 @@ và có thêm bước truy cập/đổi IP.
 ## Kiểm thử
 
 `tests/run_lab_test.sh` (Linux, root) tạo một mạng ảo gồm 2 NIC và 4 thiết bị giả lập
-(khác subnet, ngoài mọi dải mặc định, có PROFINET DCP / EtherNet/IP, cùng subnet), rồi kiểm tra
-`find`, chế độ nghe thụ động, `access`, `dcp-blink` và `dcp-setip`. CI chạy test này mỗi lần push
-và build `ipfinder.exe` cho Windows.
+(khác subnet, ngoài mọi dải mặc định, thiết bị Linux có `rp_filter`, có PROFINET DCP / EtherNet/IP,
+cùng subnet), rồi kiểm tra `find`, chế độ nghe thụ động, `access`, `dcp-blink` và `dcp-setip`.
+Đặt `IPF=đường/dẫn/ipfinder-cli` để chạy cùng bộ test với bản đã đóng gói.
+
+Mỗi lần push, CI sẽ:
+- chạy bộ test trên;
+- build bộ cài Windows bằng Python 3.8;
+- tự kiểm tra cả hai exe (`selftest`);
+- thử cài và gỡ bộ cài ở chế độ im lặng.
 
 > Lưu ý: phần PROFINET DCP / EtherNet/IP mới được kiểm thử với thiết bị giả lập theo đặc tả,
 > chưa chạy thử trên thiết bị thật.
