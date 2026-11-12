@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lab-test:
+    name: Kiểm thử trên mạng ảo (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cài đặt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iproute2 iputils-arping
+          python -m pip install -r requirements.txt
+      - name: Chạy lab test
+        run: sudo env "PATH=$PATH" bash tests/run_lab_test.sh
+
+  build-windows:
+    name: Build bộ cài Windows (offline, không cần Python)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # Python 3.8 là bản cuối hỗ trợ Windows 7 -> exe chạy được trên Windows 7 SP1 .. 11 (x64)
+          python-version: "3.8"
+          architecture: x64
+      - name: Cài công cụ build
+        run: python -m pip install -r requirements.txt pyinstaller
+      - name: Build exe (PyInstaller)
+        run: |
+          $ico = "$PWD\installer\ipfinder.ico"
+          pyinstaller --noconfirm --clean --onedir --windowed --name IPFinder --icon $ico --uac-admin --add-data "$ico;." --workpath build\gui --specpath build ipfinder_gui.py
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          pyinstaller --noconfirm --clean --onefile --console --name ipfinder-cli --icon $ico --workpath build\cli --specpath build ipfinder.py
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Tự kiểm tra exe
+        run: |
+          .\dist\ipfinder-cli.exe --version
+          .\dist\ipfinder-cli.exe selftest
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $p = Start-Process -FilePath .\dist\IPFinder\IPFinder.exe -ArgumentList '--selftest', "$PWD\gui-selftest.txt" -Wait -PassThru
+          Get-Content gui-selftest.txt
+          if ($p.ExitCode -ne 0) { exit 1 }
+      - name: Tạo bộ cài (Inno Setup) và bản portable
+        run: |
+          $v = python -c "import ipfinder; print(ipfinder.__version__)"
+          "APP_VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc "/DAppVersion=$v" installer\ipfinder.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          # Gói offline: Setup + script tải Npcap + hướng dẫn 3 ngôn ngữ + bản portable
+          $pkg = "dist\offline\IPFinder-Offline-$v"
+          New-Item -ItemType Directory -Force "$pkg\Portable" | Out-Null
+          Copy-Item "dist\IPFinder-Setup-$v.exe" $pkg
+          Copy-Item installer\offline\Download-Npcap.bat $pkg
+          Copy-Item README.md $pkg
+          (Get-Content -Raw -Encoding UTF8 installer\offline\README-FIRST.txt).Replace('{VER}', $v) | Set-Content -NoNewline -Encoding utf8BOM "$pkg\README-FIRST.txt"
+          Copy-Item -Recurse dist\IPFinder "$pkg\Portable\IPFinder"
+          Copy-Item dist\ipfinder-cli.exe "$pkg\Portable\"
+          Compress-Archive -Path $pkg -DestinationPath "dist\IPFinder-Offline-$v.zip"
+          Compress-Archive -Path dist\IPFinder, dist\ipfinder-cli.exe, README.md -DestinationPath "dist\IPFinder-portable-$v.zip"
+          Get-ChildItem dist
+      - name: Thử cài / gỡ im lặng
+        run: |
+          $setup = Get-ChildItem dist\IPFinder-Setup-*.exe | Select-Object -First 1
+          $p = Start-Process -FilePath $setup.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/LANG=zh' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { exit 1 }
+          $app = "$env:ProgramFiles\IP Finder"
+          Get-ChildItem $app | Select-Object -First 10
+          Get-Content "$app\ipfinder.ini"
+          if (-not (Select-String -Path "$app\ipfinder.ini" -Pattern 'lang=zh' -Quiet)) { Write-Host "ipfinder.ini thiếu lang=zh"; exit 1 }
+          & "$app\ipfinder-cli.exe" selftest
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $p = Start-Process -FilePath "$app\IPFinder.exe" -ArgumentList '--selftest', "$PWD\gui-installed.txt" -Wait -PassThru
+          Get-Content gui-installed.txt
+          if ($p.ExitCode -ne 0) { exit 1 }
+          $p = Start-Process -FilePath "$app\unins000.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { exit 1 }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: IPFinder-windows-${{ env.APP_VERSION }}
+          path: |
+            dist/IPFinder-Offline-*.zip
+            dist/IPFinder-Setup-*.exe
+            dist/IPFinder-portable-*.zip
+
+  release:
+    name: Tạo GitHub Release (khi push tag v*)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [lab-test, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
