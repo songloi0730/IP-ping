@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lab-test:
+    name: Kiểm thử trên mạng ảo (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cài đặt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iproute2 iputils-arping
+          sudo python3 -m pip install -r requirements.txt
+      - name: Chạy lab test
+        run: sudo -E env "PATH=$PATH" bash tests/run_lab_test.sh
+
+  build-windows:
+    name: Build ipfinder.exe (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cài đặt
+        run: |
+          python -m pip install -r requirements.txt pyinstaller
+      - name: Build
+        run: |
+          pyinstaller --onefile --console --name ipfinder --uac-admin ipfinder.py
+      - name: Kiểm tra exe chạy được
+        run: |
+          .\dist\ipfinder.exe --version
+          .\dist\ipfinder.exe --help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ipfinder-windows
+          path: |
+            dist/ipfinder.exe
+            README.md
